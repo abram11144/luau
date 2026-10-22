@@ -28,8 +28,8 @@ for Reason, Missing in {["Missing function getgenv"] = not getgenv, ["Missing fi
     end
 end
 
-local MainPath = "https://raw.githubusercontent.com/nikoladhima/PhantomWare/refs/heads/main/src/Main.luau"
-local Base = "NikoletoScripts/PhantomWare/"
+local MainPath = "https://raw.githubusercontent.com/abram11144/luau/refs/heads/main/Main.luau"
+local Base = "abram11144/luau/"
 for _,Path in {"NikoletoScripts", string.sub(Base, 1, -2), Base .. "Sounds", Base .. "Configs", Base .. "Cache", Base .. "Logs"} do
     pcall(function()
         if not isfolder(Path) then
@@ -91,7 +91,7 @@ if QueueOnTeleport then
             return loadstring(game:HttpGet(']] .. MainPath .. [['))()
         end
 
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/nikoladhima/PhantomWare/refs/heads/main/Loader.luau"))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/abram11144/luau/refs/heads/main/CustomLoader.luau"))()
     ]])
 end
 
