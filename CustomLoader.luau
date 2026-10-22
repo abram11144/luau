@@ -11,11 +11,11 @@ local LocalPlayer = Players.LocalPlayer
 -- ВПИШИ СВОЙ НИК И ИМЯ РЕПО СЮДА:
 -- ═══════════════════════════════════════════════════════════
 local GITHUB_USER = "abram11144"
-local GITHUB_REPO = "44"
+local GITHUB_REPO = "luau"
 local GITHUB_BRANCH = "main"
 
 local SourceURL = string.format(
-    "https://raw.githubusercontent.com/abram11144/44/refs/heads/main/Main.luau?token=GHSAT0AAAAAAENMSOY2FOZTMTN4SLRNL4RA2W2FEGQ",
+    "https://raw.githubusercontent.com/abram11144/luau/refs/heads/main/Main.luau",
     GITHUB_USER, GITHUB_REPO, GITHUB_BRANCH
 )
 
