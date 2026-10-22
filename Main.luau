@@ -2657,7 +2657,7 @@ for Index = 1, 64 do
 	local Angle = (Index - 1) * TwoPi / 64
 	FOVCircleDots[Index] = Vector2.new(math.cos(Angle), math.sin(Angle))
 end
-
+local AutoPredict = { Enabled = false }
 local AimingModule = {NextShot = 0, Start = 0}
 function AimingModule:GetTarget(CharacterHash, AimbotPart, WallCheck, FOVOrigin, FOVRadius)
 	local IsClosest = AimbotPart == "Closest"
@@ -2787,7 +2787,7 @@ function AimingModule:UpdateAimbot(LocalHeadPosition, Now)
 		end
 
 		local Part, Screen, IsVisible, Position = self:GetTarget(CharacterHash, AimbotPart, WallCheck, FOVOrigin, FOVRadius)
-		if Part and AutoPredict.Enabled then
+		if Part and AutoPredict and AutoPredict.Enabled then
     Position = AutoPredict:PredictPart(Player, Part, CameraPosition)
     local NewScreen, OnScreen = WorldToViewportPoint(Position)
     if OnScreen then Screen = NewScreen end
@@ -3531,7 +3531,7 @@ end)
 --╔══════════════════════════════════════════════════════════════════╗
 --║  AUTO PREDICT  •  Bullet drop + target velocity + ping + iterate  ║
 --╚══════════════════════════════════════════════════════════════════╝
-local AutoPredict = {
+AutoPredict = {
     Enabled      = true,
     PingComp     = 1.0,
     Samples      = 5,
