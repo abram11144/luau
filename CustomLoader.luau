@@ -28,8 +28,8 @@ for Reason, Missing in {["Missing function getgenv"] = not getgenv, ["Missing fi
     end
 end
 
-local MainPath = "https://raw.githubusercontent.com/abram11144/luau/refs/heads/main/Main.luau"
-local Base = "abram11144/luau/"
+local MainPath = "https://raw.githubusercontent.com/abram11144/luau/refs/heads/main/pytech"
+local Base = "abram11144/pytech/"
 for _,Path in {"NikoletoScripts", string.sub(Base, 1, -2), Base .. "Sounds", Base .. "Configs", Base .. "Cache", Base .. "Logs"} do
     pcall(function()
         if not isfolder(Path) then
