@@ -8534,501 +8534,204 @@ end
     end;
 
     modules[objects["Instance14"]] = function()
-    local script = objects["Instance14"];
-    return function(shared, page)
-        local cons      = shared.Connections
-        local settings  = shared.Settings
+        local script = objects["Instance14"];
+return function(shared, page)
+    local cons = shared.Connections
+    local hooks = shared.HookFunction -- custom safe hooks
+    local settings = shared.Settings
 
-        -- ==== 0. Всё, что даёт executor =====================================
-        local getbytecode = getfenv().getscriptbytecode
-        local getscripts  = getfenv().getscripts
-        local getrunning  = getfenv().getrunningscripts
-        local getmodules  = getfenv().getloadedmodules
-        local getfromthread = getfenv().getscriptfromthread
-        local getgc       = getfenv().getgc
-        local getreg      = getfenv().getreg
-        local getnil      = getfenv().getnilinstances
-        local getinst     = getfenv().getinstances
-        local getallthreads = getfenv().getallthreads
-            or getfenv().getthreads
+    local codeBox = shared.CodeBox(page.Contents.View.Editor.TextBox, shared.UseEnv)
+    codeBox.Text = ""
 
-        local _decompile  = getfenv().decompile
-        local requestfn   = getfenv().request or (http and http.request) or http_request
-        local writefile   = getfenv().writefile
-        local makefolder  = getfenv().makefolder
-        local isfolder    = getfenv().isfolder
-        local HttpService = game:GetService("HttpService")
+    local gsbc = getfenv().getscriptbytecode or function(scr)
+        return "\0"
+    end
 
-        local function decompile(scr)
-            if _decompile then
-                local ok, src = pcall(_decompile, scr)
-                if ok and type(src) == "string" and #src > 0 then return src end
-            end
-            if getbytecode and requestfn then
-                local ok, bc = pcall(getbytecode, scr)
-                if not ok or type(bc) ~= "string" or bc == "" then
-                    return nil, "bytecode unavailable"
-                end
-                local encoder = base64_encode
-                    or (crypt and crypt.base64encode)
-                    or function(d) return d end
-                local ok2, res = pcall(requestfn, {
-                    Url = "https://decompiler.bytefall.dev/decompile",
-                    Method = "POST",
-                    Headers = { ["Content-Type"] = "application/json" },
-                    Body = HttpService:JSONEncode({ script = encoder(bc) }),
-                })
-                if ok2 and type(res) == "table"
-                    and (res.StatusCode == 200 or res.Status == 200)
-                    and type(res.Body) == "string" and #res.Body > 0 then
-                    return res.Body
-                end
-                return nil, (res and (res.Body or ("HTTP " .. tostring(res.StatusCode)))) or "request failed"
-            end
-            return nil, "no decompiler"
-        end
+    local badDecompile = function(scr)
+        return-- scr.Name .. " " ..
+            "-- \"decompile\" does not exist or failed"
+    end
 
-        -- ==== 1. Сбор кандидатов =============================================
-        local candidates    = {}
-        local dynamicChunks = {}   -- [source] = true
-        local seen          = {}
-
-        local function addCandidate(obj)
-            if typeof(obj) ~= "Instance" then return end
-            local cls = obj.ClassName
-            if cls ~= "LocalScript" and cls ~= "ModuleScript" and cls ~= "Script" then
-                return
-            end
-            candidates[obj] = true
-        end
-
-        -- 1.1 Дерево DataModel целиком
-        for _, v in game:GetDescendants() do addCandidate(v) end
-
-        -- 1.2 CoreGui / CorePackages отдельно (на случай если дерево их не отдало)
-        for _, svcName in { "CoreGui", "CorePackages", "Chat", "TextChatService" } do
-            local ok, svc = pcall(game.GetService, game, svcName)
-            if ok and svc then
-                for _, v in svc:GetDescendants() do addCandidate(v) end
+    local _decompile = getfenv().decompile or badDecompile
+    local decompiling = 0
+    
+    local decompile = function(scr)
+        while task.wait() do
+            if decompiling <= settings.Decompile_limit then
+                decompiling += 1
+                local decompiled = _decompile(scr)
+                decompiling -= 1
+                
+                return decompiled
             end
         end
+    end
 
-        -- 1.3 Списки executor'а
-        for _, fnName in { "getscripts", "getrunning", "getmodules", "getnil", "getinst" } do
-            local fn = (fnName == "getscripts" and getscripts)
-                or (fnName == "getrunning" and getrunning)
-                or (fnName == "getmodules" and getmodules)
-                or (fnName == "getnil" and getnil)
-                or (fnName == "getinst" and getinst)
-            if type(fn) == "function" then
-                local ok, list = pcall(fn)
-                if ok and type(list) == "table" then
-                    for _, v in list do addCandidate(v) end
-                end
-            end
-        end
+    local decompiled = { }
+    local scripts, decompil = 1, 0
 
-        -- 1.4 getgc(true) — инстансы + апвэлью функций + таблицы
-        local function scanGC()
-            if type(getgc) ~= "function" then return end
-            local ok, gc = pcall(getgc, true)
-            if not ok or type(gc) ~= "table" then return end
+    local stuff = {
+        ModuleScript = {
+            Color3.fromRGB(165, 105, 255),
+            "rbxassetid://72574623675660"
+        },
 
-            for _, obj in gc do
-                if typeof(obj) == "Instance" then
-                    addCandidate(obj)
-                elseif typeof(obj) == "function" then
-                    -- апвэлью
-                    local ok2, ups = pcall(debug.getupvalues, obj)
-                    if ok2 and type(ups) == "table" then
-                        for _, up in ups do
-                            if typeof(up) == "Instance" then addCandidate(up) end
-                            if typeof(up) == "table" then
-                                for _, tup in up do
-                                    if typeof(tup) == "Instance" then addCandidate(tup) end
-                                end
-                            end
-                        end
-                    end
-                    -- скрипт через поток
-                    if type(getfromthread) == "function" then
-                        local ok3, t = pcall(debug.info, obj, "t")
-                        if ok3 and typeof(t) == "thread" then
-                            local ok4, scr = pcall(getfromthread, t)
-                            if ok4 and typeof(scr) == "Instance" then addCandidate(scr) end
-                        end
-                    end
-                elseif typeof(obj) == "thread" then
-                    if type(getfromthread) == "function" then
-                        local ok2, scr = pcall(getfromthread, obj)
-                        if ok2 and typeof(scr) == "Instance" then addCandidate(scr) end
-                    end
-                elseif typeof(obj) == "table" then
-                    for k, v in obj do
-                        if typeof(v) == "Instance" then addCandidate(v) end
-                        if typeof(k) == "Instance" then addCandidate(k) end
-                    end
-                end
-            end
-        end
-        task.spawn(scanGC)
-
-        -- 1.5 getreg() — глубокий обход
-        local function scanRegistry()
-            if type(getreg) ~= "function" then return end
-            local ok, reg = pcall(getreg)
-            if not ok or type(reg) ~= "table" then return end
-
-            local visited = {}
-            local function walk(t, depth)
-                depth = depth or 0
-                if depth > 3 or visited[t] then return end
-                visited[t] = true
-                for k, v in t do
-                    if typeof(v) == "Instance" then addCandidate(v) end
-                    if typeof(k) == "Instance" then addCandidate(k) end
-                    if type(v) == "table" then walk(v, depth + 1) end
-                end
-            end
-            walk(reg, 0)
-        end
-        task.spawn(scanRegistry)
-
-        -- 1.6 debug.getregistry() — внутренности Lua
-        local function scanDebugRegistry()
-            if not (debug and debug.getregistry) then return end
-            local ok, reg = pcall(debug.getregistry)
-            if not ok or type(reg) ~= "table" then return end
-
-            local visited = {}
-            local function walk(t, depth)
-                depth = depth or 0
-                if depth > 4 or visited[t] then return end
-                visited[t] = true
-                for k, v in t do
-                    if typeof(v) == "Instance" then addCandidate(v) end
-                    if typeof(k) == "Instance" then addCandidate(k) end
-                    if type(v) == "table" and k ~= "__index" and k ~= "__newindex" then
-                        walk(v, depth + 1)
-                    end
-                end
-            end
-            walk(reg, 0)
-        end
-        task.spawn(scanDebugRegistry)
-
-        -- 1.7 Потоки → скрипты
-        local function scanThreads()
-            local threads = {}
-            if type(getallthreads) == "function" then
-                local ok, list = pcall(getallthreads)
-                if ok and type(list) == "table" then threads = list end
-            end
-            if #threads == 0 and type(getgc) == "function" then
-                local ok, gc = pcall(getgc)
-                if ok and type(gc) == "table" then
-                    for _, obj in gc do
-                        if typeof(obj) == "thread" then threads[#threads+1] = obj end
-                    end
-                end
-            end
-            if type(getfromthread) ~= "function" then return end
-            for _, th in threads do
-                local ok, scr = pcall(getfromthread, th)
-                if ok and typeof(scr) == "Instance" then addCandidate(scr) end
-            end
-        end
-        task.spawn(scanThreads)
-
-        -- 1.8 Таблицы окружения: getgenv / _G / shared
-        local function scanEnvTables()
-            local function walk(t, visited, depth)
-                depth = depth or 0
-                if depth > 5 or type(t) ~= "table" or visited[t] then return end
-                visited[t] = true
-                for k, v in t do
-                    if typeof(v) == "Instance" then addCandidate(v) end
-                    if typeof(k) == "Instance" then addCandidate(k) end
-                    if type(v) == "table" then walk(v, visited, depth + 1) end
-                end
-            end
-            local visited = {}
-            if type(getfenv().getgenv) == "function" then
-                local ok, genv = pcall(getfenv().getgenv)
-                if ok and type(genv) == "table" then walk(genv, visited, 0) end
-            end
-            if type(_G) == "table" then walk(_G, visited, 0) end
-            if type(shared) == "table" then walk(shared, visited, 0) end
-        end
-        task.spawn(scanEnvTables)
-
-        -- 1.9 Хук loadstring — динамические чанки
-        local origLoad = getfenv().loadstring
-        if type(origLoad) == "function" and type(getfenv().hookfunction) == "function" then
-            pcall(function()
-                getfenv().hookfunction(origLoad, function(old, src, name, ...)
-                    if type(src) == "string" and #src > 0 then
-                        dynamicChunks[src] = true
-                    end
-                    return old(src, name, ...)
-                end)
-            end)
-        end
-
-        -- 1.10 Хук require — ловим динамически загруженные ModuleScript
-        local origReq = getfenv().require
-        if type(origReq) == "function" and type(getfenv().hookfunction) == "function" then
-            pcall(function()
-                getfenv().hookfunction(origReq, function(old, module, ...)
-                    if typeof(module) == "Instance" and module:IsA("ModuleScript") then
-                        addCandidate(module)
-                    end
-                    return old(module, ...)
-                end)
-            end)
-        end
-
-        -- 1.11 Живой перехват новых скриптов во время скана
-        cons[#cons + 1] = game.DescendantAdded:Connect(function(inst)
-            if inst:IsA("LuaSourceContainer") then addCandidate(inst) end
-        end)
-
-        -- ==== 2. Декомпиляция ================================================
-        local decompiled = {}
-        local decompiling = 0
-        local failed = {}
-
-        local function safeDecompile(scr)
-            if decompiled[scr] ~= nil then return decompiled[scr] or nil end
-            while decompiling >= (settings.Decompile_limit or 3) do task.wait(0.05) end
-            decompiling += 1
-            local src, reason = decompile(scr)
-            decompiling -= 1
-            if src then
-                decompiled[scr] = src
-                return src
-            end
-            failed[scr] = reason or "unknown"
-            return nil
-        end
-
-        -- ==== 3. Дамп в файл =================================================
-        local function sanitizePath(path)
-            local s = path:gsub("^game%.", "")
-            s = s:gsub("[\\/:*?\"<>|]", "_")
-            s = s:gsub("%.", "_")
-            if #s > 180 then s = s:sub(1, 180) end
-            return s
-        end
-
-        local function dumpAllScripts()
-            if not writefile or not makefolder then
-                return false, "writefile/makefolder недоступны"
-            end
-            pcall(makefolder, "Ketamine")
-            local index, dumpedCount, failedCount = {}, 0, 0
-
-            for scr, src in pairs(decompiled) do
-                if src then
-                    local okPath, full = pcall(function() return scr:GetFullName() end)
-                    local path = okPath and full or tostring(scr)
-                    local base = sanitizePath(path)
-                    local finalName, n = base .. ".lua", 1
-                    while index[finalName] do
-                        n += 1
-                        finalName = base .. "_" .. n .. ".lua"
-                    end
-                    local okWrite, err = pcall(writefile, "Ketamine/" .. finalName, src)
-                    if okWrite then
-                        index[finalName] = { path = path, className = scr.ClassName, size = #src }
-                        dumpedCount += 1
-                    else
-                        failedCount += 1
-                        index["FAILED_" .. finalName] = { path = path, error = tostring(err) }
-                    end
-                end
-            end
-
-            local ci = 1
-            for chunk in pairs(dynamicChunks) do
-                local name = ("dynamic_chunk_%d.lua"):format(ci)
-                if pcall(writefile, "Ketamine/" .. name, chunk) then
-                    index[name] = { path = "[loadstring chunk]", size = #chunk }
-                    dumpedCount += 1
-                end
-                ci += 1
-            end
-
-            pcall(writefile, "Ketamine/_index.json", HttpService:JSONEncode({
-                dumpedAt = os.date("%Y-%m-%d %H:%M:%S"),
-                total = dumpedCount,
-                failed = failedCount,
-                files = index,
-            }))
-            return true, ("сохранено %d, ошибок %d"):format(dumpedCount, failedCount)
-        end
-        shared.DumpScriptScanner = dumpAllScripts
-
-        -- ==== 4. UI / Поиск =================================================
-        local codeBox = shared.CodeBox(page.Contents.View.Editor.TextBox, shared.UseEnv)
-        codeBox.Text = ""
-
-        local logg = page.Contents.View.ScanResults.List.Log
-        logg.Visible = false
-        local path
-        local logs = {}
-
-        local stuff = {
-            ModuleScript = { Color3.fromRGB(165, 105, 255), "rbxassetid://72574623675660" },
-            LocalScript  = { Color3.fromRGB(43, 177, 255),  "rbxassetid://120549633847891" },
-            Script       = { Color3.fromRGB(255, 170, 0),   "rbxassetid://120549633847891" },
+        LocalScript = {
+            Color3.fromRGB(43, 177, 255),
+            "rbxassetid://120549633847891"
         }
+    }
 
-        local function keywordScan(scr, keywords)
-            local src = decompiled[scr]
-            if not src then return end
-            local _path = scr:IsDescendantOf(game)
-                and "game." .. scr:GetFullName()
-                or ("(nil)[\"" .. scr.Name:gsub("\"", "\\\"") .. "\"]")
-            local haystack = (_path .. "\n" .. src):lower()
-            local matches = 0
-            for _, kw in keywords do
-                matches += (#haystack:split(kw) - 1)
-            end
-            if matches > 0 then
-                local tbl = stuff[scr.ClassName] or stuff.LocalScript
-                local log = shared:AddButton(logg:Clone())
-                log.Parent = logg.Parent
-                log.Visible = true
-                log.Contents.ScriptName.Text = scr.Name
-                log.Contents.ScriptPath.Text = _path
-                log.Contents.Matches.Text = matches
-                log.LayoutOrder = matches
-                log.Contents.Matches.TextColor3 = tbl[1]
-                log.Contents.Icon.Image = tbl[2]
-                logs[#logs + 1] = log
-                cons[#cons + 1] = log.MouseButton1Click:Connect(function()
-                    page.Contents.View.ScanResults.Visible = false
-                    page.Contents.View.Editor.Visible = true
-                    codeBox.Text = src
-                    path = _path
-                end)
-            end
+    local logg = page.Contents.View.ScanResults.List.Log
+    logg.Visible = false
+
+    local path
+    local logs = { }
+
+    local function keywordScan(scr, keywords)
+        local _path = scr:IsDescendantOf(game) and "game." .. scr:GetFullName() or "(nil)[\"" .. scr.Name:gsub("\"", "\\\"") .. "\")"
+        local src = _path .. "\n" .. decompiled[scr]:lower()
+        local matches = 0
+
+        for _, keyword in keywords do
+            matches += (#src:split(keyword)) - 1
         end
 
-        -- ==== 5. Запуск =====================================================
-        local scriptsTotal, scriptsDone = 0, 0
-        local started = false
+        if matches > 0 then
+            local tbl = (stuff[scr.ClassName] or stuff.LocalScript)
+            local log = shared:AddButton(logg:Clone())
+            log.Parent = logg.Parent
+            log.Visible = true
+            log.Contents.ScriptName.Text = scr.Name
+            log.Contents.ScriptPath.Text = _path
+            log.Contents.Matches.Text = matches
+            log.LayoutOrder = matches
+            log.Contents.Matches.TextColor3 = tbl[1]
+            log.Contents.Icon.Image = tbl[2]
+            logs[#logs + 1] = log
 
-        local function processOne(scr)
-            if seen[scr] then return end
-            seen[scr] = true
-            scriptsTotal += 1
-            local src = safeDecompile(scr)
-            scriptsDone += 1
-            if src then
+            cons[#cons + 1] = log.MouseButton1Click:Connect(function()
+                page.Contents.View.ScanResults.Visible = false
+                page.Contents.View.Editor.Visible = true
+
+                codeBox.Text = decompiled[scr]
+                path = _path
+            end)
+
+            --[[cons[#cons + 1] = scr.Destroying:Connect(function()
+                table.remove(logs, table.find(logs, log))
+                log:Destroy()
+            end)]]
+        end
+    end
+
+    task.spawn(function()
+        local function dec(scr)
+            if (game:GetService("CoreGui") and not scr:IsDescendantOf(game:GetService("CoreGui")) and not scr:IsDescendantOf(game:GetService("CorePackages")) or not game:GetService("CoreGui")) and (scr:IsA("LocalScript") or scr:IsA("ModuleScript") or scr:IsA("Script") and scr.RunContext == Enum.RunContext.Client) and not decompiled[scr] and #(gsbc and gsbc(scr) or "") ~= 0 then
+                scripts += 1
+                local decompi = decompile(scr)
+                decompiled[scr] = decompi
+                decompil += 1
+
                 local text = page.Contents.SearchBar.Field.TextBox.Text:lower()
-                if text:gsub("%s", "") ~= "" then
-                    keywordScan(scr, text:gsub(";%s*", ";"):split(";"))
+
+                if text:gsub(" ", ""):gsub("\t", ""):gsub("\r", ""):gsub("\n", "") ~= "" then
+                    keywordScan(scr, text:gsub("; ", ";"):split(";"))
                 end
             end
         end
 
+        local started = false
         local function start()
             if started then return end
             started = true
-
-            -- подождём 2 секунды, чтобы все асинхронные сканы (GC, threads, hookи) успели добавить кандидатов
-            task.wait(2)
-
-            local list = {}
-            for scr in candidates do list[#list + 1] = scr end
-
+            
             task.spawn(function()
-                while scriptsDone < scriptsTotal or scriptsTotal == 0 do
-                    local max = math.max(#tostring(scriptsTotal), #tostring(scriptsDone), 1)
-                    page.Loading.TextLabel.Text =
-                        ("[ %0" .. max .. "d / %0" .. max .. "d ] The tool is loading...")
-                        :format(scriptsDone, scriptsTotal)
-                    page.Loading.CanvasGroup.Frame.Position = UDim2.fromScale(
-                        scriptsTotal > 0 and (scriptsDone / scriptsTotal) - 1 or 0, 0)
-                    task.wait(0.5)
+                while scripts ~= decompil do
+                    local max = math.max(#tostring(scripts), #tostring(decompil))
+                    page.Loading.TextLabel.Text = "[ " .. string.format("%0" .. max .. "d", scripts) .. " / " .. string.format("%0" .. max .. "d", decompil) .. " ] The tool is loading..."
+                    page.Loading.CanvasGroup.Frame.Position = UDim2.fromScale((decompil / scripts) - 1, 0)
+
+                    task.wait()
                 end
+
                 page.Loading:TweenPosition(UDim2.fromScale(0, 1), nil, nil, 1, true)
                 page.Contents:TweenSize(UDim2.fromScale(1, 1), nil, nil, 1, true)
+
                 task.wait(1)
+
                 page.Loading:Destroy()
             end)
 
             page.Loading.Start.Visible = false
             page.Loading.TextLabel.Visible = true
             page.Loading.CanvasGroup.Visible = true
+            
+            for i, v in (getfenv().getnilinstances and getfenv().getnilinstances() or { }) do
+                task.spawn(dec, v)
 
-            for i, scr in list do
-                task.spawn(processOne, scr)
-                if i % 20 == 0 then task.wait(0.2) end
-            end
-
-            for chunk in pairs(dynamicChunks) do
-                scriptsTotal += 1
-                scriptsDone += 1
-                local log = shared:AddButton(logg:Clone())
-                log.Parent = logg.Parent
-                log.Visible = true
-                log.Contents.ScriptName.Text = "[loadstring chunk]"
-                log.Contents.ScriptPath.Text = "dynamic"
-                log.Contents.Matches.Text = "0"
-                log.Contents.Icon.Image = stuff.LocalScript[2]
-                log.LayoutOrder = 0
-                logs[#logs + 1] = log
-                cons[#cons + 1] = log.MouseButton1Click:Connect(function()
-                    page.Contents.View.ScanResults.Visible = false
-                    page.Contents.View.Editor.Visible = true
-                    codeBox.Text = chunk
-                end)
-            end
-
-            task.wait(1)
-            scriptsDone = scriptsTotal
-
-            -- авто-дамп в файл
-            local ok, msg = dumpAllScripts()
-            warn("[Ketamine ScriptScanner] " .. (ok and msg or ("ошибка: " .. tostring(msg))))
-        end
-
-        task.spawn(function()
-            page.Loading.Start.MouseButton1Click:Connect(start)
-        end)
-
-        -- ==== 6. Кнопки Editor ==============================================
-        local clipboard = shared.Clipboard
-
-        cons[#cons + 1] = page.Contents.View.Editor.Back.MouseButton1Click:Connect(function()
-            page.Contents.View.ScanResults.Visible = true
-            page.Contents.View.Editor.Visible = false
-        end)
-
-        cons[#cons + 1] = page.Contents.View.Editor.CopyPath.MouseButton1Click:Connect(function()
-            clipboard(path)
-        end)
-
-        cons[#cons + 1] = page.Contents.View.Editor.CopyCode.MouseButton1Click:Connect(function()
-            clipboard(codeBox.Text)
-        end)
-
-        -- Повторный поиск по уже декомпилированным
-        cons[#cons + 1] = page.Contents.SearchBar.Field.TextBox.FocusLost:Connect(function()
-            local text = page.Contents.SearchBar.Field.TextBox.Text:lower():gsub("%s", "")
-            for _, log in logs do log:Destroy() end
-            table.clear(logs)
-            if text ~= "" then
-                local keywords = text:gsub(";%s*", ";"):split(";")
-                for scr, src in decompiled do
-                    if src then keywordScan(scr, keywords) end
+                if i % 350 == 0 then
+                    task.wait()
                 end
             end
-        end)
-    end
+
+            for i, v in (getfenv().getinstances and getfenv().getinstances() or { }) do
+                task.spawn(dec, v)
+
+                if i % 350 == 0 then
+                    task.wait()
+                end
+            end
+
+            for i, v in game:GetDescendants() do
+                task.spawn(dec, v)
+
+                if i % 350 == 0 then
+                    task.wait()
+                end
+            end
+
+            cons[#cons + 1] = game.DescendantAdded:Connect(dec)
+
+            task.wait(2.5)
+
+            decompil += 1
+        end
+        
+        page.Loading.Start.MouseButton1Click:Connect(start)
+    end)
+
+    local clipboard = shared.Clipboard
+
+    cons[#cons + 1] = page.Contents.View.Editor.Back.MouseButton1Click:Connect(function()
+        page.Contents.View.ScanResults.Visible = true
+        page.Contents.View.Editor.Visible = false
+    end)
+
+    cons[#cons + 1] = page.Contents.View.Editor.CopyPath.MouseButton1Click:Connect(function()
+        clipboard(path)
+    end)
+
+    cons[#cons + 1] = page.Contents.View.Editor.CopyCode.MouseButton1Click:Connect(function()
+        clipboard(codeBox.Text)
+    end)
+
+    cons[#cons + 1] = page.Contents.SearchBar.Field.TextBox.FocusLost:Connect(function()
+        local text = page.Contents.SearchBar.Field.TextBox.Text:lower()
+
+        for _, v in logs do
+            v:Destroy()
+        end
+
+        table.clear(logs)
+
+        if text:gsub(" ", ""):gsub("\t", ""):gsub("\r", ""):gsub("\n", "") ~= "" then
+            local keywords = text:gsub("; ", ";"):split(";")
+            for scr in decompiled do
+                keywordScan(scr, keywords)
+            end
+        end
+    end)
 end
     end;
 
@@ -9452,7 +9155,7 @@ local settings = {
             instance.Label.Text = "Maximum log amount [ " .. math.max(1, state * 5) .. " ]"
         end
     end},
-    {"Decompile_limit", {5, 1, 50}, function(state, instance)
+    {"Decompile_limit", {1, 1, 50}, function(state, instance)
         if instance then
             instance.Label.Text = "Decompile limit [ " .. state .. " / 50 scripts at the same time ]"
         end
